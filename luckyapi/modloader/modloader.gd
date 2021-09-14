@@ -4,7 +4,7 @@ var tree: SceneTree
 const ModSymbol = preload("res://modloader/ModSymbol.gd")
 const SymbolPatcher = preload("res://modloader/SymbolPatcher.gd")
 
-const modloader_version := "v0.2.0"
+const modloader_version := "v0.3.0"
 const expected_versions := ["v0.11"]
 var game_version: String = "<game version not determined yet>"
 
@@ -18,6 +18,7 @@ var mod_count := 0
 var databases := {}
 var globals := {}
 var mod_symbols := {}
+var mod_items := {}
 var symbol_patches := {}
 var translations := {}
 var current_mod_name := ""
@@ -48,7 +49,8 @@ func add_mod_symbol(path: String, params := {}):
         "value": mod_symbol.value,
         "values": mod_symbol.values,
         "groups": mod_symbol.groups,
-        "rarity": mod_symbol.rarity
+        "rarity": mod_symbol.rarity,
+        "sfx": mod_symbol.sfx,
     }
 
     databases.sfx_database.symbols[id] = mod_symbol.sfx
@@ -79,6 +81,54 @@ func add_mod_symbol(path: String, params := {}):
     
     print("LuckyAPI MODLOADER > Mod Symbol added: " + id)
     return mod_symbol
+
+func add_mod_item(path: String, params := {}):
+    var script := load(path)
+    var mod_item := script.new()
+    mod_item.init(self, params)
+    var id := mod_item.id
+    mod_items[id] = mod_item
+    if current_mod_name != "":
+        mod_item.mod_name = current_mod_name
+        mod_content[current_mod_name].items.push_back(mod_item)
+    
+    _assert(check_extends(script, "res://modloader/ModItem.gd"), "Mod item " + id + " does not extend Moditem.gd!")
+
+    databases.icon_texture_database[id] = mod_item.texture
+    for extra_texture_key in mod_item.extra_textures.keys():
+        databases.icon_texture_database[id + "_" + extra_texture_key] = mod_item.extra_textures[extra_texture_key]
+    
+    databases.item_database[id] = {
+        "type": id,
+        "value": mod_item.value,
+        "values": mod_item.values,
+        "groups": mod_item.groups,
+        "rarity": mod_item.rarity
+    }
+
+    if mod_item.rarity != null:
+        databases.rarity_database.items[mod_item.rarity].push_back(id)
+
+    for group in mod_item.groups:
+        if not databases.group_database.items.has(group):
+            databases.group_database.items[group] = []
+        
+        databases.group_database.items[group].push_back(id)
+    
+    if mod_item.name is String:
+        add_translation(id, mod_item.name)
+    elif mod_item.name is Dictionary:
+        for locale in mod_item.name.keys():
+            add_translation(id, mod_item.name[locale], locale)
+    
+    if mod_item.description is String:
+        add_translation(id + "_desc", mod_item.description)
+    elif mod_item.description is Dictionary:
+        for locale in mod_item.description.keys():
+            add_translation(id + "_desc", mod_item.description[locale], locale)
+    
+    print("LuckyAPI MODLOADER > Mod item added: " + id)
+    return mod_item
 
 func add_symbol_patch(path: String, params := {}):
     var script := load(path)
@@ -153,12 +203,21 @@ func patch_symbol(symbol_patch, id):
         for extra_texture_key in extra_textures.keys():
             databases.icon_texture_database[id + "_" + extra_texture_key] = extra_textures[extra_texture_key]
     
-        var sfx := symbol_patch.patch_sfx(mod_symbol.sfx)
+    var sfx := databases.sfx_database.symbols[id]
+    if mod_symbol != null:
+        sfx = symbol_patch.patch_sfx(mod_symbol.sfx)
         mod_symbol.sfx = sfx
-        databases.sfx_database.symbols[id] = sfx
+    else:
+        sfx = symbol_patch.patch_sfx(sfx)
+    databases.sfx_database.symbols[id] = sfx
     
-        var sfx_redirects := symbol_patch.patch_sfx_redirects(mod_symbol.sfx_redirects)
-        mod_symbol.sfx_redirects = sfx_redirects
+    var sfx_overrides : Dictionary
+    if mod_symbol != null:
+        sfx_overrides = symbol_patch.patch_sfx_overrides(mod_symbol.sfx_overrides)
+        mod_symbol.sfx_overrides = sfx_overrides
+    else:
+        sfx_overrides = symbol_patch.patch_sfx_overrides(symbol_patch.sfx_overrides)
+        symbol_patch.sfx_overrides = sfx_overrides
     
     if mod_symbol != null:
         var name := symbol_patch.patch_name()
@@ -258,6 +317,8 @@ func patch_preload():
     patch("res://Card.tscn", ["res://modloader/patches/Card.gd"], ["Card"], packer)
     patch("res://Pop-up.tscn", ["res://modloader/patches/Pop-up.gd"], ["Pop-up"], packer)
     patch("res://Reel.tscn", ["res://modloader/patches/Reel.gd"], ["Reel"], packer)
+    patch("res://Item.tscn", ["res://modloader/patches/Item.gd"], ["Item"], packer)
+    #patch("res://Items.tscn", ["res://modloader/patches/Items.gd"], ["Items"], packer)
 
     _assert(packer.flush(true) == OK, "Failed to write to preload.pck")
     
@@ -270,6 +331,8 @@ func patch_preload():
     force_reload("res://Card.tscn")
     force_reload("res://Pop-up.tscn")
     force_reload("res://Reel.tscn")
+    force_reload("res://Item.tscn")
+    #force_reload("res://Items.tscn")
 
     print("LuckyAPI MODLOADER > Patching game code complete!")
 
@@ -317,7 +380,8 @@ func load_mods():
             mod_info[mod_name] = info
             mod_content[mod_name] = {
                 "symbols": [],
-                "symbol_patches": []
+                "symbol_patches": [],
+                "items": []
             }
 
             mod_count += 1
